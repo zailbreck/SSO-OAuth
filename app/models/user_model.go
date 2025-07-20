@@ -18,6 +18,22 @@ type User struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// UserCreateRequest represents the request body for creating a new user
+type UserCreateRequest struct {
+	Username string `json:"username" binding:"required"`
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required"`
+	IsActive *bool  `json:"is_active"` // Pointer to allow optional and distinguish between false and unset
+}
+
+// UserUpdateRequest represents the request body for updating an existing user
+type UserUpdateRequest struct {
+	Username *string `json:"username"` // Pointer to allow partial updates
+	Email    *string `json:"email" binding:"omitempty,email"`
+	Password *string `json:"password"`
+	IsActive *bool   `json:"is_active"`
+}
+
 // Role represents a role in the system
 type Role struct {
 	ID          uuid.UUID `json:"id"`

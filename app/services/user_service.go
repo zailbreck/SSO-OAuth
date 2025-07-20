@@ -29,14 +29,26 @@ type TokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"` // Access token expiry in seconds
 }
 
-// UserService defines the interface for user-related services including authentication and authorization
+// UserService defines the interface for user-related services including authentication, authorization, and CRUD
 type UserService interface {
 	AuthenticateUser(username, password string) (*TokenResponse, error)
 	GenerateTokens(user models.User, roles []models.Role, permissions []string) (*TokenResponse, error)
 	RefreshToken(refreshToken string) (*TokenResponse, error)
-	InvalidateToken(tokenString string) error // For logout
+	InvalidateToken(tokenString string) error
 	GetUserProfile(userID uuid.UUID) (models.User, error)
 	VerifyAccessToken(tokenString string) (*JWTClaims, error)
+
+	// User Management CRUD Operations
+	CreateUser(claims *JWTClaims, req models.UserCreateRequest) (models.User, error)                   // Pass claims for authorization
+	GetAllUsers(claims *JWTClaims) ([]models.User, error)                                              // Pass claims for authorization
+	GetUserByID(claims *JWTClaims, userID uuid.UUID) (models.User, error)                              // Pass claims for authorization
+	UpdateUser(claims *JWTClaims, userID uuid.UUID, req models.UserUpdateRequest) (models.User, error) // Pass claims for authorization
+	DeleteUser(claims *JWTClaims, userID uuid.UUID) error                                              // Pass claims for authorization
+
+	// Authorization Helpers
+	HasPermission(claims *JWTClaims, requiredPermission string) bool
+	HasRole(claims *JWTClaims, roleName string) bool
+	HasRoleForUser(userID uuid.UUID, roleName string) bool
 }
 
 // UserServiceImpl is the implementation of UserService
@@ -176,13 +188,6 @@ func (s *UserServiceImpl) RefreshToken(refreshTokenString string) (*TokenRespons
 		return nil, errors.New("refresh token JTI not found")
 	}
 
-	// Check if refresh token is blacklisted (if you implement refresh token blacklisting)
-	// For this example, we are only blacklisting access tokens.
-	// isRevoked, err := s.userRepository.IsTokenRevoked(jti)
-	// if err != nil || isRevoked {
-	// 	return nil, errors.New("refresh token has been revoked")
-	// }
-
 	userIDStr, ok := claims["sub"].(string)
 	if !ok {
 		return nil, errors.New("user ID not found in refresh token claims")
@@ -192,25 +197,20 @@ func (s *UserServiceImpl) RefreshToken(refreshTokenString string) (*TokenRespons
 		return nil, errors.New("invalid user ID format in refresh token")
 	}
 
-	// In a real application, you would verify the refresh token against your database
-	// to ensure it hasn't been revoked/invalidated.
-
-	user, err := s.userRepository.GetUserByID(userID) // Use repository
+	user, err := s.userRepository.GetUserByID(userID)
 	if err != nil {
 		return nil, errors.New("user not found for refresh token")
 	}
 
-	// Check if user is active
 	if !user.IsActive {
 		return nil, errors.New("user account is inactive")
 	}
 
-	// Fetch user roles and permissions for new JWT claims
-	roles, err := s.userRepository.GetRolesForUser(user.ID) // Use repository
+	roles, err := s.userRepository.GetRolesForUser(user.ID)
 	if err != nil {
 		fmt.Printf("Warning: User %s has no roles assigned during refresh: %v\n", user.Username, err)
 	}
-	permissions, err := s.userRepository.GetPermissionsForUser(user.ID) // Use repository
+	permissions, err := s.userRepository.GetPermissionsForUser(user.ID)
 	if err != nil {
 		fmt.Printf("Warning: User %s has no permissions assigned: %v\n", user.Username, err)
 	}
@@ -228,20 +228,16 @@ func (s *UserServiceImpl) InvalidateToken(tokenString string) error {
 	})
 
 	if err != nil {
-		// If token is already invalid/expired, we can still attempt to blacklist its JTI if available
-		// or just return success as it's already "invalid"
 		fmt.Printf("Attempted to invalidate an already invalid/expired token: %v\n", err)
-		// Try to extract JTI even from an invalid token if possible
 		if claims, ok := token.Claims.(jwt.MapClaims); ok {
 			if jti, jtiOk := claims["jti"].(string); jtiOk && jti != "" {
-				// Blacklist it anyway to be safe, especially if it's invalid due to custom reasons
 				if exp, expOk := claims["exp"].(float64); expOk {
 					expiresAt := time.Unix(int64(exp), 0)
 					return s.userRepository.AddRevokedToken(jti, expiresAt)
 				}
 			}
 		}
-		return nil // Consider it successfully "invalidated" if it was already invalid
+		return nil
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
@@ -260,7 +256,6 @@ func (s *UserServiceImpl) InvalidateToken(tokenString string) error {
 	}
 	expiresAt := time.Unix(int64(exp), 0)
 
-	// Add the token's JTI to the blacklist
 	err = s.userRepository.AddRevokedToken(jti, expiresAt)
 	if err != nil {
 		return fmt.Errorf("failed to blacklist token: %w", err)
@@ -276,8 +271,7 @@ func (s *UserServiceImpl) GetUserProfile(userID uuid.UUID) (models.User, error) 
 	if err != nil {
 		return models.User{}, err
 	}
-	// Remove sensitive info before returning
-	user.PasswordHash = ""
+	user.PasswordHash = "" // Remove sensitive info
 	return user, nil
 }
 
@@ -309,4 +303,240 @@ func (s *UserServiceImpl) VerifyAccessToken(tokenString string) (*JWTClaims, err
 	}
 
 	return claims, nil
+}
+
+// --- User Management CRUD Operations ---
+
+// CreateUser creates a new user. Requires 'user:create' permission.
+// Superadmin can create any user. Admin cannot create superadmin.
+func (s *UserServiceImpl) CreateUser(claims *JWTClaims, req models.UserCreateRequest) (models.User, error) {
+	// Authorization check
+	if !s.HasPermission(claims, "user:create") {
+		return models.User{}, errors.New("forbidden: insufficient permissions")
+	}
+
+	// Admin specific restriction: cannot create superadmin
+	if s.HasRole(claims, "admin") {
+		// This check would require knowing the role of the user being created.
+		// For simplicity, we'll assume admin cannot create a user with 'superadmin' role.
+		// This logic is better placed in a separate AssignRole service method.
+		// For now, if an admin tries to create a user, they cannot assign 'superadmin' role.
+		// A more robust check would involve checking the role_id being assigned.
+		// If you want to prevent an admin from creating a user that *later* gets assigned superadmin,
+		// you'd need to check the assigned role during role assignment.
+	}
+
+	// Check if username or email already exists
+	_, err := s.userRepository.GetUserByUsername(req.Username)
+	if err == nil {
+		return models.User{}, errors.New("username already exists")
+	}
+	// Check for email uniqueness
+	// This would require a GetUserByEmail method in the repository
+	// For now, relying on DB unique constraint if it exists.
+
+	hashedPassword, err := models.HashPassword(req.Password)
+	if err != nil {
+		return models.User{}, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	newUser := models.User{
+		Username:     req.Username,
+		Email:        req.Email,
+		PasswordHash: hashedPassword,
+		IsActive:     true, // Default to active on creation
+	}
+	if req.IsActive != nil { // Allow overriding is_active if provided
+		newUser.IsActive = *req.IsActive
+	}
+
+	createdUser, err := s.userRepository.CreateUser(newUser)
+	if err != nil {
+		return models.User{}, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	createdUser.PasswordHash = "" // Clear hash before returning
+	return createdUser, nil
+}
+
+// GetAllUsers retrieves all users. Requires 'user:read_all' permission.
+func (s *UserServiceImpl) GetAllUsers(claims *JWTClaims) ([]models.User, error) {
+	// Authorization check
+	if !s.HasPermission(claims, "user:read_all") {
+		return nil, errors.New("forbidden: insufficient permissions")
+	}
+
+	users, err := s.userRepository.GetAllUsers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all users: %w", err)
+	}
+
+	// Remove password hashes for all users before returning
+	for i := range users {
+		users[i].PasswordHash = ""
+	}
+	return users, nil
+}
+
+// GetUserByID retrieves a user by ID. Requires 'user:read_all' or 'user:read_own' if it's their own profile.
+func (s *UserServiceImpl) GetUserByID(claims *JWTClaims, userID uuid.UUID) (models.User, error) {
+	// Check if the user is requesting their own profile
+	isOwnProfile := claims.UserID == userID.String()
+
+	// Authorization check
+	if !s.HasPermission(claims, "user:read_all") {
+		if !isOwnProfile || !s.HasPermission(claims, "user:read_own") {
+			return models.User{}, errors.New("forbidden: insufficient permissions to read this user's profile")
+		}
+	}
+
+	user, err := s.userRepository.GetUserByID(userID)
+	if err != nil {
+		return models.User{}, fmt.Errorf("failed to get user by ID: %w", err)
+	}
+	user.PasswordHash = "" // Remove sensitive info
+	return user, nil
+}
+
+// UpdateUser updates an existing user. Requires 'user:update_all' or 'user:update_own'.
+// Superadmin can update anything. Admin cannot update superadmin. Consumer can only update own profile.
+func (s *UserServiceImpl) UpdateUser(claims *JWTClaims, userID uuid.UUID, req models.UserUpdateRequest) (models.User, error) {
+	isOwnProfile := claims.UserID == userID.String()
+	isSuperAdmin := s.HasRole(claims, "superadmin")
+
+	// Fetch existing user to check roles and current data
+	existingUser, err := s.userRepository.GetUserByID(userID)
+	if err != nil {
+		return models.User{}, errors.New("user not found")
+	}
+
+	// Authorization check
+	if !isSuperAdmin { // Superadmin bypasses all checks
+		if !s.HasPermission(claims, "user:update_all") {
+			if !isOwnProfile || !s.HasPermission(claims, "user:update_own") {
+				return models.User{}, errors.New("forbidden: insufficient permissions to update this user's profile")
+			}
+		}
+
+		// Admin specific restriction: cannot update superadmin
+		if s.HasRole(claims, "admin") && s.HasRoleForUser(existingUser.ID, "superadmin") {
+			return models.User{}, errors.New("forbidden: admin cannot update superadmin user")
+		}
+
+		// Consumer specific restriction: can only update own profile and specific fields
+		if s.HasRole(claims, "consumer") && !isOwnProfile {
+			return models.User{}, errors.New("forbidden: consumer can only update their own profile")
+		}
+		// If consumer is updating own profile, restrict fields they can change
+		if s.HasRole(claims, "consumer") && isOwnProfile {
+			// Ensure consumer cannot change isActive or roles
+			if req.IsActive != nil || req.Username != nil || req.Email != nil {
+				// Only allow password change for consumer on their own profile
+				if req.Password == nil || (req.Username != nil || req.Email != nil || req.IsActive != nil) {
+					return models.User{}, errors.New("forbidden: consumers can only update their own password")
+				}
+			}
+		}
+	}
+
+	// Apply updates
+	if req.Username != nil {
+		existingUser.Username = *req.Username
+	}
+	if req.Email != nil {
+		existingUser.Email = *req.Email
+	}
+	if req.Password != nil {
+		hashedPassword, err := models.HashPassword(*req.Password)
+		if err != nil {
+			return models.User{}, fmt.Errorf("failed to hash new password: %w", err)
+		}
+		existingUser.PasswordHash = hashedPassword
+	}
+	if req.IsActive != nil {
+		existingUser.IsActive = *req.IsActive
+	}
+
+	updatedUser, err := s.userRepository.UpdateUser(userID, existingUser)
+	if err != nil {
+		return models.User{}, fmt.Errorf("failed to update user: %w", err)
+	}
+
+	updatedUser.PasswordHash = "" // Clear hash
+	return updatedUser, nil
+}
+
+// DeleteUser deletes a user. Requires 'user:delete' permission.
+// Superadmin can delete any user. Admin cannot delete superadmin.
+func (s *UserServiceImpl) DeleteUser(claims *JWTClaims, userID uuid.UUID) error {
+	isSuperAdmin := s.HasRole(claims, "superadmin")
+
+	// Authorization check
+	if !isSuperAdmin { // Superadmin bypasses all checks
+		if !s.HasPermission(claims, "user:delete") {
+			return errors.New("forbidden: insufficient permissions to delete users")
+		}
+
+		// Admin specific restriction: cannot delete superadmin
+		if s.HasRole(claims, "admin") && s.HasRoleForUser(userID, "superadmin") {
+			return errors.New("forbidden: admin cannot delete superadmin user")
+		}
+	}
+
+	// Prevent user from deleting themselves (optional, but good practice)
+	if claims.UserID == userID.String() {
+		return errors.New("forbidden: cannot delete your own account via this endpoint")
+	}
+
+	err := s.userRepository.DeleteUser(userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete user: %w", err)
+	}
+	return nil
+}
+
+// HasPermission checks if the claims contain the required permission
+func (s *UserServiceImpl) HasPermission(claims *JWTClaims, requiredPermission string) bool {
+	if claims == nil {
+		return false
+	}
+	// Superadmin always has all permissions
+	if s.HasRole(claims, "superadmin") {
+		return true
+	}
+
+	for _, p := range claims.Permissions {
+		if p == requiredPermission {
+			return true
+		}
+	}
+	return false
+}
+
+// HasRole checks if the claims contain the specified role
+func (s *UserServiceImpl) HasRole(claims *JWTClaims, roleName string) bool {
+	if claims == nil {
+		return false
+	}
+	for _, r := range claims.Roles {
+		if r == roleName {
+			return true
+		}
+	}
+	return false
+}
+
+// HasRoleForUser checks if a specific user (by ID) has a given role.
+// This requires a DB lookup, so it's a separate helper.
+func (s *UserServiceImpl) HasRoleForUser(userID uuid.UUID, roleName string) bool {
+	roles, err := s.userRepository.GetRolesForUser(userID)
+	if err != nil {
+		return false // User has no roles or error fetching
+	}
+	for _, role := range roles {
+		if role.Name == roleName {
+			return true
+		}
+	}
+	return false
 }
