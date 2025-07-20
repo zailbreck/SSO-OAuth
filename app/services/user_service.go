@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"sso-service/app/models"
-	"sso-service/app/repositories" // Import the new repository package
+	"sso-service/app/repositories"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5" // For JWT handling
-	"github.com/google/uuid"       // For UUID handling
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // JWTClaims defines the claims structure for JWT
@@ -39,40 +39,51 @@ type UserService interface {
 	VerifyAccessToken(tokenString string) (*JWTClaims, error)
 
 	// User Management CRUD Operations
-	CreateUser(claims *JWTClaims, req models.UserCreateRequest) (models.User, error)                   // Pass claims for authorization
-	GetAllUsers(claims *JWTClaims) ([]models.User, error)                                              // Pass claims for authorization
-	GetUserByID(claims *JWTClaims, userID uuid.UUID) (models.User, error)                              // Pass claims for authorization
-	UpdateUser(claims *JWTClaims, userID uuid.UUID, req models.UserUpdateRequest) (models.User, error) // Pass claims for authorization
-	DeleteUser(claims *JWTClaims, userID uuid.UUID) error                                              // Pass claims for authorization
+	CreateUser(claims *JWTClaims, req models.UserCreateRequest) (models.User, error)
+	GetAllUsers(claims *JWTClaims) ([]models.User, error)
+	GetUserByID(claims *JWTClaims, userID uuid.UUID) (models.User, error)
+	UpdateUser(claims *JWTClaims, userID uuid.UUID, req models.UserUpdateRequest) (models.User, error)
+	DeleteUser(claims *JWTClaims, userID uuid.UUID) error
 
 	// Authorization Helpers
 	HasPermission(claims *JWTClaims, requiredPermission string) bool
 	HasRole(claims *JWTClaims, roleName string) bool
-	HasRoleForUser(userID uuid.UUID, roleName string) bool
+	HasRoleForUser(userID uuid.UUID, roleName string) bool // Uses RoleRepository
 }
 
 // UserServiceImpl is the implementation of UserService
 type UserServiceImpl struct {
-	jwtSecret      string
-	userRepository repositories.UserRepository // Dependency on the new repository interface
+	jwtSecret              string
+	userRepository         repositories.UserRepository
+	roleRepository         repositories.RoleRepository
+	permissionRepository   repositories.PermissionRepository
+	revokedTokenRepository repositories.RevokedTokenRepository
 }
 
 // NewUserService creates a new instance of UserServiceImpl
-func NewUserService(jwtSecret string, userRepository repositories.UserRepository) UserService {
+func NewUserService(
+	jwtSecret string,
+	userRepository repositories.UserRepository,
+	roleRepository repositories.RoleRepository,
+	permissionRepository repositories.PermissionRepository,
+	revokedTokenRepository repositories.RevokedTokenRepository,
+) UserService {
 	return &UserServiceImpl{
-		jwtSecret:      jwtSecret,
-		userRepository: userRepository,
+		jwtSecret:              jwtSecret,
+		userRepository:         userRepository,
+		roleRepository:         roleRepository,
+		permissionRepository:   permissionRepository,
+		revokedTokenRepository: revokedTokenRepository,
 	}
 }
 
 // AuthenticateUser authenticates a user and generates JWT tokens
 func (s *UserServiceImpl) AuthenticateUser(username, password string) (*TokenResponse, error) {
-	user, err := s.userRepository.GetUserByUsername(username) // Use repository
+	user, err := s.userRepository.GetUserByUsername(username)
 	if err != nil {
 		return nil, errors.New("invalid credentials")
 	}
 
-	// Check if user is active
 	if !user.IsActive {
 		return nil, errors.New("user account is inactive")
 	}
@@ -81,10 +92,8 @@ func (s *UserServiceImpl) AuthenticateUser(username, password string) (*TokenRes
 		return nil, errors.New("invalid credentials")
 	}
 
-	// Fetch user roles and permissions for JWT claims
-	roles, err := s.userRepository.GetRolesForUser(user.ID) // Use repository
+	roles, err := s.roleRepository.GetRolesForUser(user.ID)
 	if err != nil {
-		// Log this, but don't necessarily fail authentication if user has no roles
 		fmt.Printf("Warning: User %s has no roles assigned: %v\n", user.Username, err)
 	}
 	var roleNames []string
@@ -92,7 +101,7 @@ func (s *UserServiceImpl) AuthenticateUser(username, password string) (*TokenRes
 		roleNames = append(roleNames, role.Name)
 	}
 
-	permissions, err := s.userRepository.GetPermissionsForUser(user.ID) // Use repository
+	permissions, err := s.permissionRepository.GetPermissionsForUser(user.ID)
 	if err != nil {
 		fmt.Printf("Warning: User %s has no permissions assigned: %v\n", user.Username, err)
 	}
@@ -102,13 +111,10 @@ func (s *UserServiceImpl) AuthenticateUser(username, password string) (*TokenRes
 
 // GenerateTokens generates new access and refresh JWT tokens
 func (s *UserServiceImpl) GenerateTokens(user models.User, roles []models.Role, permissions []string) (*TokenResponse, error) {
-	// Generate a unique JWT ID (JTI) for the access token
 	jtiAccessToken := uuid.New().String()
-	// Generate a unique JWT ID (JTI) for the refresh token
 	jtiRefreshToken := uuid.New().String()
 
-	// Access Token (short-lived)
-	accessTokenExp := time.Now().Add(15 * time.Minute) // 15 minutes expiry
+	accessTokenExp := time.Now().Add(15 * time.Minute)
 	var roleNames []string
 	for _, role := range roles {
 		roleNames = append(roleNames, role.Name)
@@ -126,8 +132,8 @@ func (s *UserServiceImpl) GenerateTokens(user models.User, roles []models.Role, 
 			NotBefore: jwt.NewNumericDate(time.Now()),
 			Issuer:    "sso-service",
 			Subject:   user.ID.String(),
-			Audience:  []string{"sso-client"}, // Audience for the token
-			ID:        jtiAccessToken,         // Set JTI for access token
+			Audience:  []string{"sso-client"},
+			ID:        jtiAccessToken,
 		},
 	}
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
@@ -136,8 +142,7 @@ func (s *UserServiceImpl) GenerateTokens(user models.User, roles []models.Role, 
 		return nil, fmt.Errorf("failed to sign access token: %w", err)
 	}
 
-	// Refresh Token (long-lived)
-	refreshTokenExp := time.Now().Add(7 * 24 * time.Hour) // 7 days expiry
+	refreshTokenExp := time.Now().Add(7 * 24 * time.Hour)
 	refreshClaims := &jwt.RegisteredClaims{
 		ExpiresAt: jwt.NewNumericDate(refreshTokenExp),
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -145,17 +150,13 @@ func (s *UserServiceImpl) GenerateTokens(user models.User, roles []models.Role, 
 		Issuer:    "sso-service",
 		Subject:   user.ID.String(),
 		Audience:  []string{"sso-client"},
-		ID:        jtiRefreshToken, // Set JTI for refresh token
+		ID:        jtiRefreshToken,
 	}
 	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
 	refreshTokenString, err := refreshToken.SignedString([]byte(s.jwtSecret))
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign refresh token: %w", err)
 	}
-
-	// In a real application, you would store the refresh token in a database
-	// associated with the user, and potentially invalidate old refresh tokens.
-	// For this example, we are not persisting refresh tokens, but their JTI is generated.
 
 	return &TokenResponse{
 		AccessToken:  accessTokenString,
@@ -206,11 +207,11 @@ func (s *UserServiceImpl) RefreshToken(refreshTokenString string) (*TokenRespons
 		return nil, errors.New("user account is inactive")
 	}
 
-	roles, err := s.userRepository.GetRolesForUser(user.ID)
+	roles, err := s.roleRepository.GetRolesForUser(user.ID) // Use roleRepository
 	if err != nil {
 		fmt.Printf("Warning: User %s has no roles assigned during refresh: %v\n", user.Username, err)
 	}
-	permissions, err := s.userRepository.GetPermissionsForUser(user.ID)
+	permissions, err := s.permissionRepository.GetPermissionsForUser(user.ID) // Use permissionRepository
 	if err != nil {
 		fmt.Printf("Warning: User %s has no permissions assigned: %v\n", user.Username, err)
 	}
@@ -233,7 +234,7 @@ func (s *UserServiceImpl) InvalidateToken(tokenString string) error {
 			if jti, jtiOk := claims["jti"].(string); jtiOk && jti != "" {
 				if exp, expOk := claims["exp"].(float64); expOk {
 					expiresAt := time.Unix(int64(exp), 0)
-					return s.userRepository.AddRevokedToken(jti, expiresAt)
+					return s.revokedTokenRepository.AddRevokedToken(jti, expiresAt) // Use revokedTokenRepository
 				}
 			}
 		}
@@ -256,7 +257,7 @@ func (s *UserServiceImpl) InvalidateToken(tokenString string) error {
 	}
 	expiresAt := time.Unix(int64(exp), 0)
 
-	err = s.userRepository.AddRevokedToken(jti, expiresAt)
+	err = s.revokedTokenRepository.AddRevokedToken(jti, expiresAt) // Use revokedTokenRepository
 	if err != nil {
 		return fmt.Errorf("failed to blacklist token: %w", err)
 	}
@@ -267,7 +268,7 @@ func (s *UserServiceImpl) InvalidateToken(tokenString string) error {
 
 // GetUserProfile retrieves user profile by ID
 func (s *UserServiceImpl) GetUserProfile(userID uuid.UUID) (models.User, error) {
-	user, err := s.userRepository.GetUserByID(userID) // Corrected: Calls repository
+	user, err := s.userRepository.GetUserByID(userID)
 	if err != nil {
 		return models.User{}, err
 	}
@@ -293,8 +294,7 @@ func (s *UserServiceImpl) VerifyAccessToken(tokenString string) (*JWTClaims, err
 		return nil, errors.New("invalid token claims or token not valid")
 	}
 
-	// Check if token is blacklisted
-	isRevoked, err := s.userRepository.IsTokenRevoked(claims.ID) // claims.ID is the JTI
+	isRevoked, err := s.revokedTokenRepository.IsTokenRevoked(claims.ID)
 	if err != nil {
 		return nil, fmt.Errorf("error checking token blacklist: %w", err)
 	}
@@ -474,7 +474,7 @@ func (s *UserServiceImpl) DeleteUser(claims *JWTClaims, userID uuid.UUID) error 
 	// Authorization check
 	if !isSuperAdmin { // Superadmin bypasses all checks
 		if !s.HasPermission(claims, "user:delete") {
-			return errors.New("forbidden: insufficient permissions to delete users")
+			return errors.New("forbidden: insufficient permissions")
 		}
 
 		// Admin specific restriction: cannot delete superadmin
@@ -529,7 +529,7 @@ func (s *UserServiceImpl) HasRole(claims *JWTClaims, roleName string) bool {
 // HasRoleForUser checks if a specific user (by ID) has a given role.
 // This requires a DB lookup, so it's a separate helper.
 func (s *UserServiceImpl) HasRoleForUser(userID uuid.UUID, roleName string) bool {
-	roles, err := s.userRepository.GetRolesForUser(userID)
+	roles, err := s.roleRepository.GetRolesForUser(userID) // Use roleRepository
 	if err != nil {
 		return false // User has no roles or error fetching
 	}

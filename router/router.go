@@ -1,61 +1,84 @@
 package router
 
 import (
-	"database/sql"
+	// "database/sql" // Removed: db is no longer directly passed here
 	"sso-service/app/controllers"
-	"sso-service/app/middleware" // Import the new middleware package
-	"sso-service/app/repositories"
+	"sso-service/app/middleware"
 	"sso-service/app/services"
 
 	"github.com/gin-gonic/gin"
 )
 
 // SetupRouter initializes API routes
-func SetupRouter(apiVersion string, jwtSecret string, db *sql.DB) *gin.Engine {
+func SetupRouter(
+	apiVersion string,
+	userService services.UserService, // Passed for middleware
+	siteController controllers.SiteController,
+	roleController controllers.RoleController,
+	permissionController controllers.PermissionController,
+	authController controllers.AuthController,
+	userController controllers.UserController,
+) *gin.Engine {
 	r := gin.Default() // Create Gin router instance
-
-	// Initialize Repository
-	userRepository := repositories.NewUserRepository(db)
-
-	// Initialize Service
-	userService := services.NewUserService(jwtSecret, userRepository)
-
-	// Initialize Controllers
-	authController := controllers.NewAuthController(userService)
-	userController := controllers.NewUserController(userService)
 
 	// Group routes for /api/<version>
 	apiGroup := r.Group("/api/" + apiVersion)
 	{
 		// Public routes (no authentication required)
 		apiGroup.POST("/login", authController.Login)
-		apiGroup.POST("/refresh", authController.Refresh)
 
 		// Protected routes (authentication required)
 		protected := apiGroup.Group("/")
-		// Use middleware from the new package
 		protected.Use(middleware.AuthMiddleware(userService)) // Apply AuthMiddleware to all routes in this group
 		{
 			// User Profile (authenticated, but potentially accessible by all roles)
 			protected.GET("/me", userController.GetMe)
+			protected.POST("/refresh", authController.Refresh)
 			protected.POST("/logout", authController.Logout)
 
 			// User Management (CRUD) - Requires specific permissions
 			usersGroup := protected.Group("/users")
 			{
-				// Create User: Requires 'user:create' permission
 				usersGroup.POST("/", middleware.PermissionMiddleware(userService, "user:create"), userController.CreateUser)
-				// Get All Users: Requires 'user:read_all' permission
 				usersGroup.GET("/", middleware.PermissionMiddleware(userService, "user:read_all"), userController.GetUsers)
-				// Get User by ID: Requires 'user:read_all' or 'user:read_own' (handled in service)
 				usersGroup.GET("/:id", middleware.PermissionMiddleware(userService, "user:read_all", "user:read_own"), userController.GetUserByID)
-				// Update User: Requires 'user:update_all' or 'user:update_own' (handled in service)
 				usersGroup.PUT("/:id", middleware.PermissionMiddleware(userService, "user:update_all", "user:update_own"), userController.UpdateUser)
-				// Delete User: Requires 'user:delete' permission
 				usersGroup.DELETE("/:id", middleware.PermissionMiddleware(userService, "user:delete"), userController.DeleteUser)
 			}
 
-			// Add other protected routes here
+			// Site Management (CRUD) - Requires specific permissions
+			sitesGroup := protected.Group("/sites")
+			{
+				sitesGroup.POST("/", middleware.PermissionMiddleware(userService, "site:create"), siteController.CreateSite)
+				sitesGroup.GET("/", middleware.PermissionMiddleware(userService, "site:read_all"), siteController.GetAllSites)
+				sitesGroup.GET("/:id", middleware.PermissionMiddleware(userService, "site:read_all"), siteController.GetSiteByID)
+				sitesGroup.PUT("/:id", middleware.PermissionMiddleware(userService, "site:update"), siteController.UpdateSite)
+				sitesGroup.DELETE("/:id", middleware.PermissionMiddleware(userService, "site:delete"), siteController.DeleteSite)
+			}
+
+			// Role Management (CRUD & Assignment) - Requires specific permissions
+			rolesGroup := protected.Group("/roles")
+			{
+				rolesGroup.POST("/", middleware.PermissionMiddleware(userService, "role:create"), roleController.CreateRole)
+				rolesGroup.GET("/", middleware.PermissionMiddleware(userService, "role:read_all"), roleController.GetAllRoles)
+				rolesGroup.GET("/:id", middleware.PermissionMiddleware(userService, "role:read_all"), roleController.GetRoleByID)
+				rolesGroup.PUT("/:id", middleware.PermissionMiddleware(userService, "role:update"), roleController.UpdateRole)
+				rolesGroup.DELETE("/:id", middleware.PermissionMiddleware(userService, "role:delete"), roleController.DeleteRole)
+				rolesGroup.POST("/assign", middleware.PermissionMiddleware(userService, "role:assign"), roleController.AssignRoleToUser)
+				rolesGroup.POST("/remove", middleware.PermissionMiddleware(userService, "role:assign"), roleController.RemoveRoleFromUser) // Re-use assign permission for remove
+			}
+
+			// Permission Management (CRUD & Assignment) - Requires specific permissions
+			permissionsGroup := protected.Group("/permissions")
+			{
+				permissionsGroup.POST("/", middleware.PermissionMiddleware(userService, "permission:create"), permissionController.CreatePermission)
+				permissionsGroup.GET("/", middleware.PermissionMiddleware(userService, "permission:read_all"), permissionController.GetAllPermissions)
+				permissionsGroup.GET("/:id", middleware.PermissionMiddleware(userService, "permission:read_all"), permissionController.GetPermissionByID)
+				permissionsGroup.PUT("/:id", middleware.PermissionMiddleware(userService, "permission:update"), permissionController.UpdatePermission)
+				permissionsGroup.DELETE("/:id", middleware.PermissionMiddleware(userService, "permission:delete"), permissionController.DeletePermission)
+				permissionsGroup.POST("/assign", middleware.PermissionMiddleware(userService, "permission:assign"), permissionController.AssignPermissionToRole)
+				permissionsGroup.POST("/remove", middleware.PermissionMiddleware(userService, "permission:assign"), permissionController.RemovePermissionFromRole) // Re-use assign permission for remove
+			}
 		}
 	}
 
