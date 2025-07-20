@@ -1,94 +1,61 @@
 package router
 
 import (
-	"database/sql" // Import database/sql
-	"net/http"
+	"database/sql"
 	"sso-service/app/controllers"
-	"sso-service/app/repositories" // Import the new repositories package
+	"sso-service/app/middleware" // Import the new middleware package
+	"sso-service/app/repositories"
 	"sso-service/app/services"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-// AuthMiddleware verifies JWT token from Authorization header
-func AuthMiddleware(userService services.UserService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"status":  http.StatusUnauthorized,
-				"data":    nil,
-				"message": "Authorization header required",
-			})
-			c.Abort()
-			return
-		}
-
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-		if tokenString == authHeader { // No "Bearer " prefix found
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"status":  http.StatusUnauthorized,
-				"data":    nil,
-				"message": "Bearer token required",
-			})
-			c.Abort()
-			return
-		}
-
-		claims, err := userService.VerifyAccessToken(tokenString)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"status":  http.StatusUnauthorized,
-				"data":    nil,
-				"message": "Invalid or expired token: " + err.Error(),
-			})
-			c.Abort()
-			return
-		}
-
-		// Set user ID and claims in context for subsequent handlers
-		c.Set("userID", claims.UserID)
-		c.Set("username", claims.Username)
-		c.Set("email", claims.Email)
-		c.Set("roles", claims.Roles)
-		c.Set("permissions", claims.Permissions)
-
-		c.Next() // Proceed to the next handler (the actual route handler)
-	}
-}
-
 // SetupRouter initializes API routes
-func SetupRouter(apiVersion string, jwtSecret string, db *sql.DB) *gin.Engine { // Added db parameter
+func SetupRouter(apiVersion string, jwtSecret string, db *sql.DB) *gin.Engine {
 	r := gin.Default() // Create Gin router instance
 
 	// Initialize Repository
-	userRepository := repositories.NewUserRepository(db) // Pass db to UserRepository
+	userRepository := repositories.NewUserRepository(db)
 
 	// Initialize Service
-	userService := services.NewUserService(jwtSecret, userRepository) // Pass userRepository to UserService
+	userService := services.NewUserService(jwtSecret, userRepository)
 
 	// Initialize Controllers
-	authController := controllers.NewAuthController(userService) // AuthController for login, refresh, logout
-	userController := controllers.NewUserController(userService) // User Controller for /me (and other user profile actions)
+	authController := controllers.NewAuthController(userService)
+	userController := controllers.NewUserController(userService)
 
 	// Group routes for /api/<version>
 	apiGroup := r.Group("/api/" + apiVersion)
 	{
 		// Public routes (no authentication required)
 		apiGroup.POST("/login", authController.Login)
+		apiGroup.POST("/refresh", authController.Refresh)
 
 		// Protected routes (authentication required)
-		// All routes defined within this 'protected' group will automatically use AuthMiddleware
 		protected := apiGroup.Group("/")
-		protected.Use(AuthMiddleware(userService)) // Apply AuthMiddleware to all routes in this group
+		// Use middleware from the new package
+		protected.Use(middleware.AuthMiddleware(userService)) // Apply AuthMiddleware to all routes in this group
 		{
+			// User Profile (authenticated, but potentially accessible by all roles)
 			protected.GET("/me", userController.GetMe)
-			apiGroup.POST("/refresh", authController.Refresh)
-			protected.POST("/logout", authController.Logout) // Logout is now handled by AuthController
-			// Add other protected routes here that require authentication
-			// e.g., protected.GET("/users/:id", userController.GetUserByID) // Example: if you want to get other user profiles
-			// e.g., protected.GET("/content", contentController.GetContent)
+			protected.POST("/logout", authController.Logout)
+
+			// User Management (CRUD) - Requires specific permissions
+			usersGroup := protected.Group("/users")
+			{
+				// Create User: Requires 'user:create' permission
+				usersGroup.POST("/", middleware.PermissionMiddleware(userService, "user:create"), userController.CreateUser)
+				// Get All Users: Requires 'user:read_all' permission
+				usersGroup.GET("/", middleware.PermissionMiddleware(userService, "user:read_all"), userController.GetUsers)
+				// Get User by ID: Requires 'user:read_all' or 'user:read_own' (handled in service)
+				usersGroup.GET("/:id", middleware.PermissionMiddleware(userService, "user:read_all", "user:read_own"), userController.GetUserByID)
+				// Update User: Requires 'user:update_all' or 'user:update_own' (handled in service)
+				usersGroup.PUT("/:id", middleware.PermissionMiddleware(userService, "user:update_all", "user:update_own"), userController.UpdateUser)
+				// Delete User: Requires 'user:delete' permission
+				usersGroup.DELETE("/:id", middleware.PermissionMiddleware(userService, "user:delete"), userController.DeleteUser)
+			}
+
+			// Add other protected routes here
 		}
 	}
 
