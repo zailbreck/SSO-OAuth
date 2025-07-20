@@ -457,7 +457,7 @@ func (s *UserServiceImpl) UpdateUser(claims *JWTClaims, userID uuid.UUID, req mo
 		existingUser.IsActive = *req.IsActive
 	}
 
-	updatedUser, err := s.userRepository.UpdateUser(userID, existingUser)
+	updatedUser, err := s.userRepository.UpdateUser(existingUser)
 	if err != nil {
 		return models.User{}, fmt.Errorf("failed to update user: %w", err)
 	}

@@ -160,7 +160,7 @@ func (s *PermissionServiceImpl) UpdatePermission(claims *JWTClaims, permissionID
 		existingPermission.ParentID = nil // Explicitly set to NULL if nil is passed
 	}
 
-	updatedPermission, err := s.permissionRepository.UpdatePermission(permissionID, existingPermission)
+	updatedPermission, err := s.permissionRepository.UpdatePermission(existingPermission)
 	if err != nil {
 		return models.Permission{}, fmt.Errorf("failed to update permission: %w", err)
 	}

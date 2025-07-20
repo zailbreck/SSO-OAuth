@@ -126,7 +126,7 @@ func (s *RoleServiceImpl) UpdateRole(claims *JWTClaims, roleID uuid.UUID, req mo
 		existingRole.Description = *req.Description
 	}
 
-	updatedRole, err := s.roleRepository.UpdateRole(roleID, existingRole)
+	updatedRole, err := s.roleRepository.UpdateRole(existingRole)
 	if err != nil {
 		return models.Role{}, fmt.Errorf("failed to update role: %w", err)
 	}

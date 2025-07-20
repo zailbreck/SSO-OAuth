@@ -1,12 +1,13 @@
 package repositories
 
 import (
-	"database/sql"
+	"errors"
 	"fmt"
 	"sso-service/app/models"
 	"time"
 
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 // UserRepository defines the interface for user data operations
@@ -15,113 +16,97 @@ type UserRepository interface {
 	GetUserByID(id uuid.UUID) (models.User, error)
 	GetAllUsers() ([]models.User, error)
 	CreateUser(user models.User) (models.User, error)
-	UpdateUser(id uuid.UUID, user models.User) (models.User, error)
+	UpdateUser(user models.User) (models.User, error)
 	DeleteUser(id uuid.UUID) error
 }
 
 // UserRepositoryImpl is the implementation of UserRepository
 type UserRepositoryImpl struct {
-	db *sql.DB
+	db *gorm.DB // Diubah ke *gorm.DB
 }
 
 // NewUserRepository creates a new instance of UserRepositoryImpl
-func NewUserRepository(db *sql.DB) UserRepository {
+func NewUserRepository(db *gorm.DB) UserRepository {
 	return &UserRepositoryImpl{db: db}
 }
 
-// GetUserByUsername retrieves a user by their username from the database
+// GetUserByUsername retrieves a user by their username from the database using GORM
 func (r *UserRepositoryImpl) GetUserByUsername(username string) (models.User, error) {
 	var user models.User
-	query := `SELECT id, username, email, password_hash, is_active, created_at, updated_at FROM users WHERE username = $1`
-	err := r.db.QueryRow(query, username).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.IsActive, &user.CreatedAt, &user.UpdatedAt)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return models.User{}, fmt.Errorf("user not found: %w", err)
+	result := r.db.Where("username = ?", username).First(&user)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return models.User{}, fmt.Errorf("user not found: %w", result.Error)
 		}
-		return models.User{}, fmt.Errorf("error getting user by username: %w", err)
+		return models.User{}, fmt.Errorf("error getting user by username: %w", result.Error)
 	}
 	return user, nil
 }
 
-// GetUserByID retrieves a user by their ID from the database
+// GetUserByID retrieves a user by their ID from the database using GORM
 func (r *UserRepositoryImpl) GetUserByID(id uuid.UUID) (models.User, error) {
 	var user models.User
-	query := `SELECT id, username, email, password_hash, is_active, created_at, updated_at FROM users WHERE id = $1`
-	err := r.db.QueryRow(query, id).Scan(&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.IsActive, &user.CreatedAt, &user.UpdatedAt)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return models.User{}, fmt.Errorf("user not found: %w", err)
+	result := r.db.First(&user, id) // GORM can find by primary key directly
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return models.User{}, fmt.Errorf("user not found: %w", result.Error)
 		}
-		return models.User{}, fmt.Errorf("error getting user by ID: %w", err)
+		return models.User{}, fmt.Errorf("error getting user by ID: %w", result.Error)
 	}
 	return user, nil
 }
 
-// GetAllUsers retrieves all users from the database
+// GetAllUsers retrieves all users from the database using GORM
 func (r *UserRepositoryImpl) GetAllUsers() ([]models.User, error) {
-	query := `SELECT id, username, email, is_active, created_at, updated_at FROM users`
-	rows, err := r.db.Query(query)
-	if err != nil {
-		return nil, fmt.Errorf("error getting all users: %w", err)
-	}
-	defer rows.Close()
-
 	var users []models.User
-	for rows.Next() {
-		var user models.User
-		// Note: password_hash is not selected here for security
-		if err := rows.Scan(&user.ID, &user.Username, &user.Email, &user.IsActive, &user.CreatedAt, &user.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("error scanning user: %w", err)
-		}
-		users = append(users, user)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating over users: %w", err)
+	// Menggunakan Omit untuk tidak menyertakan password_hash dalam hasil
+	result := r.db.Omit("password_hash").Find(&users)
+	if result.Error != nil {
+		return nil, fmt.Errorf("error getting all users: %w", result.Error)
 	}
 	return users, nil
 }
 
-// CreateUser inserts a new user into the database
+// CreateUser inserts a new user into the database using GORM
 func (r *UserRepositoryImpl) CreateUser(user models.User) (models.User, error) {
-	user.ID = uuid.New() // Generate a new UUID for the user
+	// GORM akan otomatis mengisi ID, CreatedAt, dan UpdatedAt
+	user.ID = uuid.New()
 	user.CreatedAt = time.Now()
 	user.UpdatedAt = time.Now()
 
-	query := `INSERT INTO users (id, username, email, password_hash, is_active, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`
-	err := r.db.QueryRow(query, user.ID, user.Username, user.Email, user.PasswordHash, user.IsActive, user.CreatedAt, user.UpdatedAt).Scan(&user.ID)
-	if err != nil {
-		return models.User{}, fmt.Errorf("failed to create user: %w", err)
+	result := r.db.Create(&user)
+	if result.Error != nil {
+		return models.User{}, fmt.Errorf("failed to create user: %w", result.Error)
 	}
 	return user, nil
 }
 
-// UpdateUser updates an existing user in the database
-func (r *UserRepositoryImpl) UpdateUser(id uuid.UUID, user models.User) (models.User, error) {
+// UpdateUser updates an existing user in the database using GORM
+func (r *UserRepositoryImpl) UpdateUser(user models.User) (models.User, error) {
+	if user.ID == uuid.Nil {
+		return models.User{}, errors.New("cannot update user without ID")
+	}
 	user.UpdatedAt = time.Now()
-	query := `UPDATE users SET username = $1, email = $2, password_hash = $3, is_active = $4, updated_at = $5 WHERE id = $6 RETURNING id`
-	err := r.db.QueryRow(query, user.Username, user.Email, user.PasswordHash, user.IsActive, user.UpdatedAt, id).Scan(&user.ID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return models.User{}, fmt.Errorf("user not found for update: %w", err)
-		}
-		return models.User{}, fmt.Errorf("failed to update user: %w", err)
+
+	// Gunakan Save untuk memperbarui semua field
+	result := r.db.Save(&user)
+
+	if result.Error != nil {
+		return models.User{}, fmt.Errorf("failed to update user: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return models.User{}, gorm.ErrRecordNotFound
 	}
 	return user, nil
 }
 
-// DeleteUser deletes a user from the database
+// DeleteUser deletes a user from the database using GORM
 func (r *UserRepositoryImpl) DeleteUser(id uuid.UUID) error {
-	query := `DELETE FROM users WHERE id = $1`
-	result, err := r.db.Exec(query, id)
-	if err != nil {
-		return fmt.Errorf("failed to delete user: %w", err)
+	result := r.db.Delete(&models.User{}, id)
+	if result.Error != nil {
+		return fmt.Errorf("failed to delete user: %w", result.Error)
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected after delete: %w", err)
-	}
-	if rowsAffected == 0 {
+	if result.RowsAffected == 0 {
 		return fmt.Errorf("user not found for deletion")
 	}
 	return nil

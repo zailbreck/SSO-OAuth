@@ -6,7 +6,12 @@ import (
 
 // RevokedToken represents a blacklisted JWT
 type RevokedToken struct {
-	JTI       string    `json:"jti"`        // JWT ID
-	ExpiresAt time.Time `json:"expires_at"` // Original expiration time of the token
-	RevokedAt time.Time `json:"revoked_at"` // When it was revoked
+	JTI       string    `gorm:"primaryKey"` // Tandai sebagai primary key
+	ExpiresAt time.Time `json:"expires_at"`
+	RevokedAt time.Time `json:"revoked_at"`
+}
+
+// TableName secara eksplisit memberi tahu GORM nama tabel yang harus digunakan.
+func (RevokedToken) TableName() string {
+	return "revoked_tokens"
 }

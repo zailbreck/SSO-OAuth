@@ -107,7 +107,7 @@ func (s *SiteServiceImpl) UpdateSite(claims *JWTClaims, siteID uuid.UUID, req mo
 		existingSite.SiteSlug = *req.SiteSlug
 	}
 
-	updatedSite, err := s.siteRepository.UpdateSite(siteID, existingSite)
+	updatedSite, err := s.siteRepository.UpdateSite(existingSite)
 	if err != nil {
 		return models.Site{}, fmt.Errorf("failed to update site: %w", err)
 	}
