@@ -3,7 +3,7 @@ package database
 import (
 	"fmt"
 	"log"
-	"os"
+	"sso-service/config"
 	"time"
 
 	"gorm.io/driver/postgres" // Driver GORM untuk PostgreSQL
@@ -11,23 +11,16 @@ import (
 )
 
 // InitDB initializes and returns a GORM database connection pool
-func InitDB() (*gorm.DB, error) {
-	dbHost := os.Getenv("DB_HOST")
-	dbPort := os.Getenv("DB_PORT")
-	dbUser := os.Getenv("DB_USER")
-	dbPassword := os.Getenv("DB_PASSWORD")
-	dbName := os.Getenv("DB_NAME")
-	dbSSLMode := os.Getenv("DB_SSLMODE")
-
+// InitDB sekarang menerima Config untuk dependensi yang lebih jelas.
+func InitDB(cfg *config.Config) (*gorm.DB, error) {
 	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		dbHost, dbPort, dbUser, dbPassword, dbName, dbSSLMode)
+		cfg.DBHost, cfg.DBPort, cfg.DBUser, cfg.DBPassword, cfg.DBName, cfg.DBSSLMode)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("error opening database with gorm: %w", err)
 	}
 
-	// Set connection pool settings (optional but recommended)
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get underlying sql.DB: %w", err)
@@ -36,8 +29,6 @@ func InitDB() (*gorm.DB, error) {
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	// Ping aGORM tidak memiliki Ping() langsung, tapi operasi pertama akan memvalidasi koneksi.
-	// Jika Anda ingin memastikan koneksi, Anda bisa menggunakan sqlDB.Ping()
 	if err := sqlDB.Ping(); err != nil {
 		return nil, fmt.Errorf("error connecting to the database: %w", err)
 	}

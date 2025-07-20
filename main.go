@@ -2,60 +2,40 @@ package main
 
 import (
 	"log"
-	"os"
 	"sso-service/app/controllers"
 	"sso-service/app/repositories"
 	"sso-service/app/services"
+	"sso-service/config" // Impor paket config
 	"sso-service/database"
 	"sso-service/router"
-
-	"github.com/joho/godotenv"
-	// Impor GORM
 )
 
 func main() {
-	// ... (kode untuk env, port, jwtSecret tetap sama) ...
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("No .env file found or error loading .env. Using default environment variables.")
-	}
+	// 1. Muat semua konfigurasi dalam satu langkah.
+	cfg := config.LoadConfig()
 
-	apiVersion := os.Getenv("API_VERSION")
-	if apiVersion == "" {
-		apiVersion = "v1"
-	}
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		log.Fatal("JWT_SECRET environment variable is not set. Please set it in .env or system environment.")
-	}
-
-	// PERUBAHAN DI SINI: Inisialisasi database GORM
-	db, err := database.InitDB()
+	// 2. Inisialisasi database dengan meneruskan konfigurasi.
+	db, err := database.InitDB(cfg)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer database.CloseDB(db)
 
+	// 3. Inisialisasi semua komponen lain dengan nilai dari struct config.
+	// Repositories
 	userRepository := repositories.NewUserRepository(db)
 	siteRepository := repositories.NewSiteRepository(db)
 	roleRepository := repositories.NewRoleRepository(db)
 	permissionRepository := repositories.NewPermissionRepository(db)
-	revokedTokenRepository := repositories.NewRevokedTokenRepository(db) // Masih menggunakan sql.DB
+	revokedTokenRepository := repositories.NewRevokedTokenRepository(db)
 
-	// ... (sisa kode untuk inisialisasi services, controllers, dan router tetap sama) ...
-	// Initialize Services
-	userService := services.NewUserService(jwtSecret, userRepository, roleRepository, permissionRepository, revokedTokenRepository)
+	// Services
+	userService := services.NewUserService(cfg.JWTSecret, userRepository, roleRepository, permissionRepository, revokedTokenRepository)
 	siteService := services.NewSiteService(siteRepository, userService)
 	roleService := services.NewRoleService(roleRepository, userRepository, userService)
 	permissionService := services.NewPermissionService(permissionRepository, roleRepository, siteRepository, userService)
 
-	// Initialize Controllers
+	// Controllers
 	authController := controllers.NewAuthController(userService)
 	userController := controllers.NewUserController(userService)
 	siteController := controllers.NewSiteController(siteService)
@@ -64,7 +44,7 @@ func main() {
 
 	// SetupRouter
 	r := router.SetupRouter(
-		apiVersion,
+		cfg.APIVersion,
 		userService,
 		siteController,
 		roleController,
@@ -73,9 +53,9 @@ func main() {
 		userController,
 	)
 
-	// Running the server
-	log.Printf("Server started on :%s with API version /api/%s\n", port, apiVersion)
-	if err := r.Run(":" + port); err != nil {
+	// 4. Jalankan server dengan port dari config.
+	log.Printf("Server started on :%s with API version /api/%s\n", cfg.Port, cfg.APIVersion)
+	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
