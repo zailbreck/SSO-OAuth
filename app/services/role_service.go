@@ -43,7 +43,7 @@ func (s *RoleServiceImpl) CreateRole(claims *JWTClaims, req models.RoleCreateReq
 	}
 
 	// Admin specific restriction: cannot create superadmin role
-	if s.userService.HasRole(claims, "admin") && req.Name == "superadmin" {
+	if s.userService.HasRole(claims, models.RoleAdmin) && req.Name == models.RoleSuperAdmin {
 		return models.Role{}, errors.New("forbidden: admin cannot create superadmin role")
 	}
 
@@ -96,7 +96,7 @@ func (s *RoleServiceImpl) GetRoleByID(claims *JWTClaims, roleID uuid.UUID) (mode
 // UpdateRole updates an existing role. Requires 'role:update' permission.
 // Superadmin can update anything. Admin cannot update superadmin role.
 func (s *RoleServiceImpl) UpdateRole(claims *JWTClaims, roleID uuid.UUID, req models.RoleUpdateRequest) (models.Role, error) {
-	isSuperAdmin := s.userService.HasRole(claims, "superadmin")
+	isSuperAdmin := s.userService.HasRole(claims, models.RoleSuperAdmin)
 
 	if !isSuperAdmin && !s.userService.HasPermission(claims, "role:update") {
 		return models.Role{}, errors.New("forbidden: insufficient permissions")
@@ -108,7 +108,7 @@ func (s *RoleServiceImpl) UpdateRole(claims *JWTClaims, roleID uuid.UUID, req mo
 	}
 
 	// Admin specific restriction: cannot update superadmin role
-	if s.userService.HasRole(claims, "admin") && existingRole.Name == "superadmin" {
+	if s.userService.HasRole(claims, models.RoleAdmin) && existingRole.Name == models.RoleSuperAdmin {
 		return models.Role{}, errors.New("forbidden: admin cannot update superadmin role")
 	}
 
@@ -136,7 +136,7 @@ func (s *RoleServiceImpl) UpdateRole(claims *JWTClaims, roleID uuid.UUID, req mo
 // DeleteRole deletes a role. Requires 'role:delete' permission.
 // Superadmin can delete anything. Admin cannot delete superadmin role.
 func (s *RoleServiceImpl) DeleteRole(claims *JWTClaims, roleID uuid.UUID) error {
-	isSuperAdmin := s.userService.HasRole(claims, "superadmin")
+	isSuperAdmin := s.userService.HasRole(claims, models.RoleSuperAdmin)
 
 	if !isSuperAdmin && !s.userService.HasPermission(claims, "role:delete") {
 		return errors.New("forbidden: insufficient permissions")
@@ -148,7 +148,7 @@ func (s *RoleServiceImpl) DeleteRole(claims *JWTClaims, roleID uuid.UUID) error 
 	}
 
 	// Admin specific restriction: cannot delete superadmin role
-	if s.userService.HasRole(claims, "admin") && existingRole.Name == "superadmin" {
+	if s.userService.HasRole(claims, models.RoleAdmin) && existingRole.Name == models.RoleSuperAdmin {
 		return errors.New("forbidden: admin cannot delete superadmin role")
 	}
 
@@ -162,7 +162,7 @@ func (s *RoleServiceImpl) DeleteRole(claims *JWTClaims, roleID uuid.UUID) error 
 // AssignRoleToUser assigns a role to a user. Requires 'role:assign' permission.
 // Admin cannot assign superadmin role.
 func (s *RoleServiceImpl) AssignRoleToUser(claims *JWTClaims, req models.AssignRoleToUserRequest) error {
-	isSuperAdmin := s.userService.HasRole(claims, "superadmin")
+	isSuperAdmin := s.userService.HasRole(claims, models.RoleSuperAdmin)
 
 	if !isSuperAdmin && !s.userService.HasPermission(claims, "role:assign") {
 		return errors.New("forbidden: insufficient permissions")
@@ -181,12 +181,12 @@ func (s *RoleServiceImpl) AssignRoleToUser(claims *JWTClaims, req models.AssignR
 	}
 
 	// Admin specific restriction: cannot assign superadmin role
-	if s.userService.HasRole(claims, "admin") && roleToAssign.Name == "superadmin" {
+	if s.userService.HasRole(claims, models.RoleAdmin) && roleToAssign.Name == models.RoleSuperAdmin {
 		return errors.New("forbidden: admin cannot assign superadmin role")
 	}
 
 	// Superadmin cannot assign superadmin role to themselves (prevent locking out) - optional
-	if isSuperAdmin && claims.UserID == req.UserID.String() && roleToAssign.Name == "superadmin" {
+	if isSuperAdmin && claims.UserID == req.UserID.String() && roleToAssign.Name == models.RoleSuperAdmin {
 		// This is a complex edge case, might need more thought.
 		// For now, allow superadmin to assign superadmin role to others.
 	}
@@ -201,7 +201,7 @@ func (s *RoleServiceImpl) AssignRoleToUser(claims *JWTClaims, req models.AssignR
 // RemoveRoleFromUser removes a role from a user. Requires 'role:assign' permission.
 // Admin cannot remove superadmin role from a user.
 func (s *RoleServiceImpl) RemoveRoleFromUser(claims *JWTClaims, req models.AssignRoleToUserRequest) error {
-	isSuperAdmin := s.userService.HasRole(claims, "superadmin")
+	isSuperAdmin := s.userService.HasRole(claims, models.RoleSuperAdmin)
 
 	if !isSuperAdmin && !s.userService.HasPermission(claims, "role:assign") {
 		return errors.New("forbidden: insufficient permissions")
@@ -220,7 +220,7 @@ func (s *RoleServiceImpl) RemoveRoleFromUser(claims *JWTClaims, req models.Assig
 	}
 
 	// Admin specific restriction: cannot remove superadmin role
-	if s.userService.HasRole(claims, "admin") && roleToRemove.Name == "superadmin" {
+	if s.userService.HasRole(claims, models.RoleAdmin) && roleToRemove.Name == models.RoleSuperAdmin {
 		return errors.New("forbidden: admin cannot remove superadmin role")
 	}
 

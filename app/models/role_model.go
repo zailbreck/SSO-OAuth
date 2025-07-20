@@ -6,6 +6,14 @@ import (
 	"github.com/google/uuid"
 )
 
+// Definisikan nama peran sebagai konstanta untuk menghindari 'magic strings'.
+const (
+	RoleSuperAdmin = "superadmin"
+	RoleAdmin      = "admin"
+	RoleSupport    = "support"
+	RoleConsumer   = "consumer"
+)
+
 // Role represents a role in the system
 type Role struct {
 	ID          uuid.UUID `json:"id"`

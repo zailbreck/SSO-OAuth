@@ -316,14 +316,8 @@ func (s *UserServiceImpl) CreateUser(claims *JWTClaims, req models.UserCreateReq
 	}
 
 	// Admin specific restriction: cannot create superadmin
-	if s.HasRole(claims, "admin") {
-		// This check would require knowing the role of the user being created.
-		// For simplicity, we'll assume admin cannot create a user with 'superadmin' role.
-		// This logic is better placed in a separate AssignRole service method.
-		// For now, if an admin tries to create a user, they cannot assign 'superadmin' role.
-		// A more robust check would involve checking the role_id being assigned.
-		// If you want to prevent an admin from creating a user that *later* gets assigned superadmin,
-		// you'd need to check the assigned role during role assignment.
+	if s.HasRole(claims, models.RoleAdmin) {
+		return models.User{}, errors.New("forbidden: insufficient permissions")
 	}
 
 	// Check if username or email already exists
@@ -402,7 +396,7 @@ func (s *UserServiceImpl) GetUserByID(claims *JWTClaims, userID uuid.UUID) (mode
 // Superadmin can update anything. Admin cannot update superadmin. Consumer can only update own profile.
 func (s *UserServiceImpl) UpdateUser(claims *JWTClaims, userID uuid.UUID, req models.UserUpdateRequest) (models.User, error) {
 	isOwnProfile := claims.UserID == userID.String()
-	isSuperAdmin := s.HasRole(claims, "superadmin")
+	isSuperAdmin := s.HasRole(claims, models.RoleSuperAdmin)
 
 	// Fetch existing user to check roles and current data
 	existingUser, err := s.userRepository.GetUserByID(userID)
@@ -419,16 +413,16 @@ func (s *UserServiceImpl) UpdateUser(claims *JWTClaims, userID uuid.UUID, req mo
 		}
 
 		// Admin specific restriction: cannot update superadmin
-		if s.HasRole(claims, "admin") && s.HasRoleForUser(existingUser.ID, "superadmin") {
+		if s.HasRole(claims, models.RoleAdmin) && s.HasRoleForUser(existingUser.ID, models.RoleSuperAdmin) {
 			return models.User{}, errors.New("forbidden: admin cannot update superadmin user")
 		}
 
 		// Consumer specific restriction: can only update own profile and specific fields
-		if s.HasRole(claims, "consumer") && !isOwnProfile {
+		if s.HasRole(claims, models.RoleConsumer) && !isOwnProfile {
 			return models.User{}, errors.New("forbidden: consumer can only update their own profile")
 		}
 		// If consumer is updating own profile, restrict fields they can change
-		if s.HasRole(claims, "consumer") && isOwnProfile {
+		if s.HasRole(claims, models.RoleConsumer) && isOwnProfile {
 			// Ensure consumer cannot change isActive or roles
 			if req.IsActive != nil || req.Username != nil || req.Email != nil {
 				// Only allow password change for consumer on their own profile
@@ -469,7 +463,7 @@ func (s *UserServiceImpl) UpdateUser(claims *JWTClaims, userID uuid.UUID, req mo
 // DeleteUser deletes a user. Requires 'user:delete' permission.
 // Superadmin can delete any user. Admin cannot delete superadmin.
 func (s *UserServiceImpl) DeleteUser(claims *JWTClaims, userID uuid.UUID) error {
-	isSuperAdmin := s.HasRole(claims, "superadmin")
+	isSuperAdmin := s.HasRole(claims, models.RoleSuperAdmin)
 
 	// Authorization check
 	if !isSuperAdmin { // Superadmin bypasses all checks
@@ -478,7 +472,7 @@ func (s *UserServiceImpl) DeleteUser(claims *JWTClaims, userID uuid.UUID) error 
 		}
 
 		// Admin specific restriction: cannot delete superadmin
-		if s.HasRole(claims, "admin") && s.HasRoleForUser(userID, "superadmin") {
+		if s.HasRole(claims, models.RoleAdmin) && s.HasRoleForUser(userID, models.RoleSuperAdmin) {
 			return errors.New("forbidden: admin cannot delete superadmin user")
 		}
 	}
@@ -501,7 +495,7 @@ func (s *UserServiceImpl) HasPermission(claims *JWTClaims, requiredPermission st
 		return false
 	}
 	// Superadmin always has all permissions
-	if s.HasRole(claims, "superadmin") {
+	if s.HasRole(claims, models.RoleSuperAdmin) {
 		return true
 	}
 
